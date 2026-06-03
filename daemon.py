@@ -63,7 +63,10 @@ def get_ws_url():
         return url
     for base in PROFILES:
         try:
-            port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
+            dt_path = base / "DevToolsActivePort"
+            if not dt_path.exists():
+                continue
+            port, path = dt_path.read_text().strip().split("\n", 1)
         except (FileNotFoundError, NotADirectoryError):
             continue
         deadline = time.time() + 30
@@ -81,7 +84,10 @@ def get_ws_url():
                 time.sleep(1)
             finally:
                 probe.close()
-        return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+        print(f"Found debug port: {port.strip()}")
+        url = f"ws://127.0.0.1:{port.strip()}{path.strip()}"
+        print(f"Using browser WS URL: {url}")
+        return url
     raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
 
 
@@ -117,10 +123,9 @@ class Daemon:
         targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
         pages = [t for t in targets if is_real_page(t)]
         if not pages:
-            # No real pages — create one instead of attaching to omnibox popup
-            tid = (await self.cdp.send_raw("Target.createTarget", {"url": "about:blank"}))["targetId"]
-            log(f"no real pages found, created about:blank ({tid})")
-            pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
+            # No real pages — don't create one automatically
+            log("no real pages found, waiting for user action")
+            return None
         self.session = (await self.cdp.send_raw(
             "Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True}
         ))["sessionId"]
@@ -154,8 +159,7 @@ class Daemon:
             elif method == "Page.javascriptDialogClosed":
                 self.dialog = None
             elif method in ("Page.loadEventFired", "Page.domContentEventFired"):
-                try: await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": mark_js}, session_id=self.session), timeout=2)
-                except Exception: pass
+                pass # Removed title marking to avoid focus stealing
             return await orig(method, params, session_id)
         self.cdp._event_registry.handle_event = tap
 
@@ -169,7 +173,6 @@ class Daemon:
             self.session = req.get("session_id")
             try:
                 await asyncio.wait_for(self.cdp.send_raw("Page.enable", session_id=self.session), timeout=3)
-                await asyncio.wait_for(self.cdp.send_raw("Runtime.evaluate", {"expression": "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"}, session_id=self.session), timeout=2)
             except Exception: pass
             return {"session_id": self.session}
         if meta == "pending_dialog": return {"dialog": self.dialog}
@@ -180,15 +183,32 @@ class Daemon:
         # Browser-level Target.* calls must not use a session (stale or otherwise).
         # For everything else, explicit session in req wins; else default.
         sid = None if method.startswith("Target.") else (req.get("session_id") or self.session)
-        try:
-            return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
-        except Exception as e:
-            msg = str(e)
-            if "Session with given id not found" in msg and sid == self.session and sid:
-                log(f"stale session {sid}, re-attaching")
-                if await self.attach_first_page():
-                    return {"result": await self.cdp.send_raw(method, params, session_id=self.session)}
-            return {"error": msg}
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                return {"result": await self.cdp.send_raw(method, params, session_id=sid)}
+            except Exception as e:
+                msg = str(e)
+                # If connection lost, try to restart daemon session
+                is_conn_error = any(x in msg.lower() for x in ["no close frame", "connection closed", "sent 1011", "not started"])
+                
+                if is_conn_error and attempt < max_retries - 1:
+                    log(f"connection lost ({msg}), attempting auto-reconnect...")
+                    try:
+                        await self.cdp.stop()
+                        await self.start()
+                        # Re-fetching sid if it was the default session
+                        if sid == self.session: sid = self.session
+                    except Exception as re_err:
+                        log(f"reconnect failed: {re_err}")
+                    continue
+
+                if "Session with given id not found" in msg and sid == self.session and sid:
+                    log(f"stale session {sid}, re-attaching")
+                    if await self.attach_first_page():
+                        if attempt < max_retries - 1:
+                            continue
+                return {"error": msg}
 
 
 async def serve(d):

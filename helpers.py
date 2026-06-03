@@ -25,13 +25,18 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 def _send(req):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(60.0) # 60 second timeout to prevent hangs
     s.connect(SOCK)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):
-        chunk = s.recv(1 << 20)
-        if not chunk: break
-        data += chunk
+        try:
+            chunk = s.recv(1 << 20)
+            if not chunk: break
+            data += chunk
+        except socket.timeout:
+            s.close()
+            raise RuntimeError("Browser communication timed out after 60 seconds")
     s.close()
     r = json.loads(data)
     if "error" in r: raise RuntimeError(r["error"])
@@ -53,11 +58,7 @@ def goto_url(url):
     return {**r, "domain_skills": sorted(p.name for p in d.rglob("*.md"))[:10]} if d.is_dir() else r
 
 def page_info():
-    """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size.
-
-    If a native dialog (alert/confirm/prompt/beforeunload) is open, returns
-    {dialog: {type, message, ...}} instead — the page's JS thread is frozen
-    until the dialog is handled (see interaction-skills/dialogs.md)."""
+    """{url, title, w, h, sx, sy, pw, ph} — viewport + scroll + page size."""
     dialog = _send({"meta": "pending_dialog"}).get("dialog")
     if dialog:
         return {"dialog": dialog}
@@ -103,9 +104,6 @@ _KEYS = {  # key → (windowsVirtualKeyCode, code, text)
     "PageUp": (33, "PageUp", ""), "PageDown": (34, "PageDown", ""),
 }
 def press_key(key, modifiers=0):
-    """Modifiers bitfield: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift.
-    Special keys (Enter, Tab, Arrow*, Backspace, etc.) carry their virtual key codes
-    so listeners checking e.keyCode / e.key all fire."""
     vk, code, text = _KEYS.get(key, (ord(key[0]) if len(key) == 1 else 0, key, key if len(key) == 1 else ""))
     base = {"key": key, "code": code, "modifiers": modifiers, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
     cdp("Input.dispatchKeyEvent", type="keyDown", **base, **({"text": text} if text else {}))
@@ -118,9 +116,16 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def capture_screenshot(path="/tmp/shot.png", full=False):
+def capture_screenshot(path=None, full=False):
+    """Captures a screenshot. If path is a boolean, treats it as 'full' and uses default path."""
+    if isinstance(path, bool):
+        full = path
+        path = None
+    path = path or f"/tmp/shot-{int(time.time())}.png"
+    
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
-    open(path, "wb").write(base64.b64decode(r["data"]))
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(r["data"]))
     return path
 
 
@@ -131,7 +136,7 @@ def list_tabs(include_chrome=True):
         if t["type"] != "page": continue
         url = t.get("url", "")
         if not include_chrome and url.startswith(INTERNAL): continue
-        out.append({"targetId": t["targetId"], "title": t.get("title", ""), "url": url})
+        out.append({"targetId": t["targetId"], "title": t.get("title", ""), "url": url, "activated": t.get("attached", False)})
     return out
 
 def current_tab():
@@ -139,32 +144,51 @@ def current_tab():
     return {"targetId": t.get("targetId"), "url": t.get("url", ""), "title": t.get("title", "")}
 
 def _mark_tab():
-    """Prepend 🟢 to tab title so the user can see which tab the agent controls."""
-    try: cdp("Runtime.evaluate", expression="if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title")
-    except Exception: pass
+    pass # Removed to avoid focus stealing via title updates
 
-def switch_tab(target_id):
-    # Unmark old tab
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
-    except Exception: pass
-    cdp("Target.activateTarget", targetId=target_id)
+def switch_tab(target_id, activate=False):
+    if activate:
+        cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid})
-    _mark_tab()
     return sid
 
-def new_tab(url="about:blank"):
-    # Always create blank, then goto: passing url to createTarget races with
-    # attach, so the brief about:blank is "complete" by the time the caller
-    # polls and wait_for_load() returns before navigation actually starts.
-    tid = cdp("Target.createTarget", url="about:blank")["targetId"]
-    switch_tab(tid)
+def find_tab_by_url(url_pattern):
+    """Finds a tab whose URL contains the pattern."""
+    for t in list_tabs():
+        if url_pattern in t["url"]:
+            return t["targetId"]
+    return None
+
+def new_tab(url="about:blank", activate=False, reuse=True):
+    """Creates a new tab or reuses an existing one if reuse=True and URL matches."""
+    if reuse and url != "about:blank":
+        existing = find_tab_by_url(url.split('?')[0]) # Strip query params for matching
+        if existing:
+            switch_tab(existing, activate=activate)
+            return existing
+
+    # 1. Remember the currently active tab to prevent jumping
+    tabs = list_tabs()
+    original_active = next((t for t in tabs if t.get('activated')), None)
+    if not original_active and tabs: original_active = tabs[0]
+    
+    # 2. Create the new tab
+    tid = cdp("Target.createTarget", url="about:blank", newWindow=False)["targetId"]
+    
+    # 3. If we didn't want to activate it, immediately pull focus back to the original
+    if not activate and original_active:
+        cdp("Target.activateTarget", targetId=original_active['targetId'])
+    
+    switch_tab(tid, activate=activate)
     if url != "about:blank":
         goto_url(url)
     return tid
 
+def close_tab(target_id):
+    return cdp("Target.closeTarget", targetId=target_id)
+
 def ensure_real_tab():
-    """Switch to a real user tab if current is chrome:// / internal / stale."""
     tabs = list_tabs(include_chrome=False)
     if not tabs:
         return None
@@ -178,7 +202,6 @@ def ensure_real_tab():
     return tabs[0]
 
 def iframe_target(url_substr):
-    """First iframe target whose URL contains `url_substr`. Use with js(..., target_id=...)."""
     for t in cdp("Target.getTargets")["targetInfos"]:
         if t["type"] == "iframe" and url_substr in t.get("url", ""):
             return t["targetId"]
@@ -190,19 +213,24 @@ def wait(seconds=1.0):
     time.sleep(seconds)
 
 def wait_for_load(timeout=15.0):
-    """Poll document.readyState == 'complete' or timeout."""
-    deadline = time.time() + timeout
+    """Waits for document.readyState to be 'complete'."""
+    if isinstance(timeout, str): # Handle cases where Gemini passes a selector by mistake
+        return wait_for_selector(timeout)
+    deadline = time.time() + float(timeout)
     while time.time() < deadline:
         if js("document.readyState") == "complete": return True
         time.sleep(0.3)
     return False
 
-def js(expression, target_id=None):
-    """Run JS in the attached tab (default) or inside an iframe target (via iframe_target()).
+def wait_for_selector(selector, timeout=10.0):
+    """Waits for an element to appear in the DOM."""
+    deadline = time.time() + float(timeout)
+    while time.time() < deadline:
+        if js(f"document.querySelector({json.dumps(selector)})"): return True
+        time.sleep(0.3)
+    return False
 
-    Expressions with top-level `return` are automatically wrapped in an IIFE, so both
-    `document.title` and `const x = 1; return x` are valid inputs.
-    """
+def js(expression, target_id=None):
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"] if target_id else None
     if "return " in expression and not expression.strip().startswith("("):
         expression = f"(function(){{{expression}}})()"
@@ -210,32 +238,26 @@ def js(expression, target_id=None):
     return r.get("result", {}).get("value")
 
 
-_KC = {"Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, " ": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
+# --- ALIASES FOR AGENT INTUITION ---
+def goto(url): return goto_url(url)
+def screenshot(path=None, full=False): return capture_screenshot(path, full)
+def click(selector): 
+    return js(f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.scrollIntoView({{behavior:'smooth',block:'center'}});e.click();return true;}}return false;}})()")
 
 
 def dispatch_key(selector, key="Enter", event="keypress"):
-    """Dispatch a DOM KeyboardEvent on the matched element.
-
-    Use this when a site reacts to synthetic DOM key events on an element more reliably
-    than to raw CDP input events.
-    """
     kc = _KC.get(key, ord(key) if len(key) == 1 else 0)
     js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});if(e){{e.focus();e.dispatchEvent(new KeyboardEvent({json.dumps(event)},{{key:{json.dumps(key)},code:{json.dumps(key)},keyCode:{kc},which:{kc},bubbles:true}}));}}}})()"
     )
 
 def upload_file(selector, path):
-    """Set files on a file input via CDP DOM.setFileInputFiles. `path` is an absolute filepath (use tempfile.mkstemp if needed)."""
     doc = cdp("DOM.getDocument", depth=-1)
     nid = cdp("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector=selector)["nodeId"]
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
 def http_get(url, headers=None, timeout=20.0):
-    """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
-
-    When BROWSER_USE_API_KEY is set, routes through the fetch-use proxy (handles bot
-    detection, residential proxies, retries). Falls back to local urllib otherwise."""
     if os.environ.get("BROWSER_USE_API_KEY"):
         try:
             from fetch_use import fetch_sync

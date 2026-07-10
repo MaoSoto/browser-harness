@@ -412,6 +412,17 @@ def extract_job_data(input_url):
 if __name__ == "__main__":
     if len(sys.argv) < 2: sys.exit(1)
     input_url = sys.argv[1]
+    
+    # Record the originally active tab to restore focus later
+    original_tid = None
+    try:
+        for t in list_tabs():
+            if t.get('activated'):
+                original_tid = t['targetId']
+                break
+    except:
+        pass
+
     try:
         data = extract_job_data(input_url)
         print("=== BEGIN JSON ===")
@@ -421,4 +432,14 @@ if __name__ == "__main__":
         print("=== BEGIN JSON ===")
         print(json.dumps({"error": str(e)}, indent=2))
         print("=== END JSON ===")
+    finally:
+        try:
+            # Find and close any tab opened for this job URL
+            for t in list_tabs():
+                if input_url.split('?')[0] in t["url"]:
+                    close_tab(t["targetId"])
+            if original_tid:
+                switch_tab(original_tid, activate=True)
+        except:
+            pass
     print("/quit")

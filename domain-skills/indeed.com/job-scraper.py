@@ -91,8 +91,17 @@ def main():
     input_url = sys.argv[1]
     
     # 1. Open job page
-    # Note: Using existing tab if possible or new background tab
-    new_tab(input_url, activate=False)
+    # Record the originally active tab to restore focus later
+    original_tid = None
+    try:
+        for t in list_tabs():
+            if t.get('activated'):
+                original_tid = t['targetId']
+                break
+    except:
+        pass
+
+    job_tid = new_tab(input_url, activate=False)
     goto_url(input_url) # Force navigation to the specific job
     wait_for_load()
     
@@ -140,7 +149,7 @@ def main():
         workplace_type = "remote"
     elif "hybrid" in (description_text or "").lower():
         workplace_type = "hybrid"
-
+ 
     posted_at = solve_posted_at(ld_data.get('datePosted') or js('document.querySelector(".date")?.innerText'))
     
     # Apply URL
@@ -148,9 +157,9 @@ def main():
     if not apply_url:
         # Sometimes it's in a script or we need to derive it
         apply_url = input_url # Default to job page if button not found
-
+ 
     external_id = get_external_id(input_url) or ld_data.get('identifier', {}).get('value')
-
+ 
     # 4. Deep research for Company
     company_website = None
     company_logo = ld_data.get('hiringOrganization', {}).get('logo')
@@ -193,7 +202,7 @@ def main():
         
         # Try to find LinkedIn URL
         company_linkedin_url = js('Array.from(document.querySelectorAll("a")).find(el => el.href && el.href.includes("linkedin.com/company"))?.href')
-
+ 
         hq_address = about_company.get('headquartersLocation', {}).get('address')
         if hq_address:
             # Simple split for city, state
@@ -207,14 +216,14 @@ def main():
         else:
             addr_locality = None
             addr_region = None
-
+ 
         company_industries = about_company.get('sectorNames', [])
         
         if not company_logo:
             company_logo = js('document.querySelector("img[src*=\'logo\']")?.src')
             
         close_tab(comp_tid)
-
+ 
     # 5. Build Final JSON
     result = {
         "job": {
@@ -261,7 +270,7 @@ def main():
         },
         "poster": None # Indeed rarely has poster info
     }
-
+ 
     # Final touch: ATS Identification
     if apply_url:
         if "workday" in apply_url: result["job"]["ats_vendor"] = "Workday"
@@ -269,14 +278,19 @@ def main():
         elif "lever" in apply_url: result["job"]["ats_vendor"] = "Lever"
         elif "icims" in apply_url: result["job"]["ats_vendor"] = "iCIMS"
         elif "smartrecruiters" in apply_url: result["job"]["ats_vendor"] = "SmartRecruiters"
-
+ 
     print("=== BEGIN JSON ===")
     print(json.dumps(result, indent=2))
     print("=== END JSON ===")
-
-    # Cleanup
-    # close_tab(current_tab()['targetId'])
-    # sys.exit(0)
+ 
+    # Cleanup: close our opened tab and restore original focus
+    try:
+        if job_tid:
+            close_tab(job_tid)
+        if original_tid:
+            switch_tab(original_tid, activate=True)
+    except:
+        pass
 
 if __name__ == "__main__":
     main()

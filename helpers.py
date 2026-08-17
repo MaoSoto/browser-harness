@@ -24,9 +24,14 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 
 def _send(req):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(60.0) # 60 second timeout to prevent hangs
-    s.connect(SOCK)
+    if hasattr(socket, "AF_UNIX") and os.path.exists(SOCK):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(60.0) # 60 second timeout to prevent hangs
+        s.connect(SOCK)
+    else:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(60.0)
+        s.connect(("127.0.0.1", 5008))
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
     while not data.endswith(b"\n"):

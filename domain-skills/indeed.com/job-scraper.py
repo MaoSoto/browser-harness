@@ -132,6 +132,18 @@ def main():
             val = bs['value']
             if isinstance(val, dict):
                 salary_text = f"${val.get('minValue')} - ${val.get('maxValue')} per {bs.get('unitText', 'year')}"
+    if not salary_text and description_text:
+        m_prefix = re.search(r'(?:salary|compensation|pay|wage)(?:[\w\s,]{0,40}?)(?:is|:|of)?\s*(\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?)', description_text, re.I)
+        if m_prefix and len(m_prefix.group(1).strip()) > 2:
+            salary_text = m_prefix.group(1).strip()
+        else:
+            m_range = re.search(r'\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?', description_text, re.I)
+            if m_range:
+                salary_text = m_range.group(0).strip()
+            else:
+                m_single = re.search(r'\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:per|\/|a|an)\s*(?:year|yr|hour|hr|month|mo|week|annually)\b', description_text, re.I)
+                if m_single:
+                    salary_text = m_single.group(0).strip()
     
     # Location and Remote status
     location_text = js('document.querySelector("div[data-testid=\'inlineHeader-companyLocation\']")?.innerText')

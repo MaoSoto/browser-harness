@@ -84,10 +84,10 @@ def extract_job_data(input_url):
     cfg_json = json.dumps(domain_cfg)
 
     # Primary Extraction Logic
-    logic = f"const __CG_CFG__ = {cfg_json};\n" + r"""
-    (() => {
+    logic = r"""
+    ((cfg) => {
         try {
-            const cfg = typeof __CG_CFG__ !== 'undefined' ? __CG_CFG__ : {};
+            cfg = cfg || {};
             const getElText = (selector) => document.querySelector(selector)?.innerText?.trim();
             
             const bodyText = document.body.innerText;
@@ -348,8 +348,8 @@ def extract_job_data(input_url):
         } catch (e) {
             return { error: e.toString() };
         }
-    })()
-    """
+    })(""" + cfg_json + ")"
+
     
     data = js(logic)
     if not data or 'error' in data:

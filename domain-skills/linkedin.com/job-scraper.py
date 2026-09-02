@@ -71,10 +71,15 @@ def extract_job_data(input_url):
     wait_for_load()
     time.sleep(10)
     
+    # Load dynamic selector configuration (with local caching and offline defaults)
+    domain_cfg = get_domain_selectors("linkedin.com") if 'get_domain_selectors' in globals() else {}
+    cfg_json = json.dumps(domain_cfg)
+
     # Primary Extraction Logic
-    logic = r"""
+    logic = f"const __CG_CFG__ = {cfg_json};\n" + r"""
     (() => {
         try {
+            const cfg = typeof __CG_CFG__ !== 'undefined' ? __CG_CFG__ : {};
             const getElText = (selector) => document.querySelector(selector)?.innerText?.trim();
             
             const bodyText = document.body.innerText;
@@ -179,7 +184,12 @@ def extract_job_data(input_url):
                 return res.length > 50 ? res : temp.innerText.trim();
             };
 
-            let descEl = document.querySelector('#job-details') || document.querySelector('.jobs-description') || document.querySelector('.description__text') || document.querySelector('.jobs-box__html-content');
+            let descEl = null;
+            const descSelectors = cfg.description_selectors || ['#job-details', '.jobs-description', '.description__text', '.jobs-box__html-content'];
+            for (const sel of descSelectors) {
+                descEl = document.querySelector(sel);
+                if (descEl) break;
+            }
             if (!descEl) {
                  const h2 = Array.from(document.querySelectorAll('h2')).find(h => h.innerText.includes('About the job'));
                  if (h2) {
@@ -190,12 +200,18 @@ def extract_job_data(input_url):
             }
             const description = descEl ? cleanDescription(descEl.innerHTML) : "NOT FOUND";
 
-            // Scoped Salary Extraction (Never search document.body.innerText globally)
+            // Scoped Salary Extraction (Driven by dynamic selector schema with offline fallback)
             let salary = null;
+            const patterns = cfg.salary_patterns || {};
+            const badgeTimeRegex = new RegExp(patterns.badge_time_regex || '(?:yr|hr|year|hour|month|mo|week|annual)', 'i');
+
             // 1. Check Top Card Insight Badges (Must contain $ and a period suffix)
-            const topCard = document.querySelector('.job-details-jobs-unified-top-card') || 
-                            document.querySelector('.jobs-unified-top-card') || 
-                            document.querySelector('[class*="top-card"]');
+            let topCard = null;
+            const topCardSelectors = cfg.top_card_selectors || ['.job-details-jobs-unified-top-card', '.jobs-unified-top-card', '[class*="top-card"]'];
+            for (const sel of topCardSelectors) {
+                topCard = document.querySelector(sel);
+                if (topCard) break;
+            }
             if (topCard) {
                 const badgeEls = Array.from(topCard.querySelectorAll('li, span, div, button')).filter(el => {
                     const text = el.innerText?.trim() || '';
@@ -203,7 +219,7 @@ def extract_job_data(input_url):
                 });
                 for (let el of badgeEls) {
                     const t = el.innerText.trim();
-                    if (/\$\d+/.test(t) && /(?:yr|hr|year|hour|month|mo|week|annual)/i.test(t)) {
+                    if (/\$\d+/.test(t) && badgeTimeRegex.test(t)) {
                         salary = t;
                         break;
                     }
@@ -211,18 +227,22 @@ def extract_job_data(input_url):
             }
             // 2. If not in top-card badges, search ONLY within scoped job description
             if (!salary && description && description !== "NOT FOUND") {
+                const prefixRegex = patterns.desc_prefix_regex ? new RegExp(patterns.desc_prefix_regex, 'i') : /(?:salary|compensation|pay|wage)(?:[\w\s,]{0,40}?)(?:is|:|of)?\s*(\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?)/i;
+                const rangeRegex = patterns.desc_range_regex ? new RegExp(patterns.desc_range_regex, 'i') : /\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?/i;
+                const singleRegex = patterns.desc_single_regex ? new RegExp(patterns.desc_single_regex, 'i') : /\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:per|\/|a|an)\s*(?:year|yr|hour|hr|month|mo|week|annually)\b/i;
+
                 // Pattern A: "salary range ... is $X - $Y" or "wage range: $X - $Y"
-                const prefixMatch = description.match(/(?:salary|compensation|pay|wage)(?:[\w\s,]{0,40}?)(?:is|:|of)?\s*(\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?)/i);
+                const prefixMatch = description.match(prefixRegex);
                 if (prefixMatch && prefixMatch[1] && prefixMatch[1].length > 2) {
                     salary = prefixMatch[1].trim();
                 } else {
                     // Pattern B: Clean standalone dollar range ($100,000 - $155,000 or $90k - $100k)
-                    const rangeMatch = description.match(/\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?/i);
+                    const rangeMatch = description.match(rangeRegex);
                     if (rangeMatch) {
                         salary = rangeMatch[0].trim();
                     } else {
                         // Pattern C: Single rate with period suffix ($50/hr, $150,000 a year)
-                        const singleMatch = description.match(/\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:per|\/|a|an)\s*(?:year|yr|hour|hr|month|mo|week|annually)\b/i);
+                        const singleMatch = description.match(singleRegex);
                         if (singleMatch) {
                             salary = singleMatch[0].trim();
                         }

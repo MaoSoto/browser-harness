@@ -114,18 +114,33 @@ def main():
         except:
             pass
             
+    # Load dynamic selector configuration (with local caching and offline defaults)
+    domain_cfg = get_domain_selectors("indeed.com") if 'get_domain_selectors' in globals() else {}
+    salary_badge_selectors = domain_cfg.get("salary_badge_selectors", ["#salaryInfoAndJobType", "div[data-testid='inlineHeader-salary']"])
+    desc_selectors = domain_cfg.get("description_selectors", ["#jobDescriptionText"])
+    patterns = domain_cfg.get("salary_patterns", {})
+
     # 3. Extract basic info from LD-JSON or DOM
     title = ld_data.get('title') or js('document.title')
     title = title.split(' - ')[0].strip() if ' - ' in title else title
     
-    desc_html = ld_data.get('description') or js('document.querySelector("#jobDescriptionText")?.innerHTML')
+    desc_html = ld_data.get('description')
+    if not desc_html:
+        for d_sel in desc_selectors:
+            desc_html = js(f'document.querySelector({json.dumps(d_sel)})?.innerHTML')
+            if desc_html:
+                break
     description_text = cleanDescription(desc_html)
     
     company_name = ld_data.get('hiringOrganization', {}).get('name') or js('document.querySelector("div[data-company-name=\'true\']")?.innerText')
     company_indeed_url = ld_data.get('hiringOrganization', {}).get('sameAs')
     
     # Salary extraction
-    salary_text = js('document.querySelector("#salaryInfoAndJobType")?.innerText')
+    salary_text = None
+    for s_sel in salary_badge_selectors:
+        salary_text = js(f'document.querySelector({json.dumps(s_sel)})?.innerText')
+        if salary_text:
+            break
     if not salary_text and ld_data.get('baseSalary'):
         bs = ld_data['baseSalary']
         if isinstance(bs, dict) and 'value' in bs:
@@ -133,15 +148,19 @@ def main():
             if isinstance(val, dict):
                 salary_text = f"${val.get('minValue')} - ${val.get('maxValue')} per {bs.get('unitText', 'year')}"
     if not salary_text and description_text:
-        m_prefix = re.search(r'(?:salary|compensation|pay|wage)(?:[\w\s,]{0,40}?)(?:is|:|of)?\s*(\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?)', description_text, re.I)
+        pref_pat = patterns.get("desc_prefix_regex", r'(?:salary|compensation|pay|wage)(?:[\w\s,]{0,40}?)(?:is|:|of)?\s*(\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?)')
+        range_pat = patterns.get("desc_range_regex", r'\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?')
+        single_pat = patterns.get("desc_single_regex", r'\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:per|\/|a|an)\s*(?:year|yr|hour|hr|month|mo|week|annually)\b')
+
+        m_prefix = re.search(pref_pat, description_text, re.I)
         if m_prefix and len(m_prefix.group(1).strip()) > 2:
             salary_text = m_prefix.group(1).strip()
         else:
-            m_range = re.search(r'\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?', description_text, re.I)
+            m_range = re.search(range_pat, description_text, re.I)
             if m_range:
                 salary_text = m_range.group(0).strip()
             else:
-                m_single = re.search(r'\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:per|\/|a|an)\s*(?:year|yr|hour|hr|month|mo|week|annually)\b', description_text, re.I)
+                m_single = re.search(single_pat, description_text, re.I)
                 if m_single:
                     salary_text = m_single.group(0).strip()
     

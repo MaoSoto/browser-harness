@@ -276,3 +276,9 @@ def http_get(url, headers=None, timeout=20.0):
         data = r.read()
         if r.headers.get("Content-Encoding") == "gzip": data = gzip.decompress(data)
         return data.decode()
+
+# --- Dynamic Scraper Selectors ---
+try:
+    from selector_manager import get_domain_selectors, load_selectors
+except ImportError:
+    pass

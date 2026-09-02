@@ -1,10 +1,18 @@
+import sys
+import os
+from pathlib import Path
+
+# Ensure harness-code root is always in sys.path regardless of execution environment
+_HARNESS_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _HARNESS_ROOT not in sys.path:
+    sys.path.insert(0, _HARNESS_ROOT)
+
 from helpers import *
+from selector_manager import get_domain_selectors
 import urllib.request
 import urllib.parse
 import time
 import json
-import sys
-import os
 import re
 from datetime import datetime, timedelta
 

@@ -13,8 +13,8 @@ LinkedIn job pages are complex Single Page Applications (SPA). They contain rich
 ### CRITICAL RULE: SCOPED EXTRACTION
 
 To balance accuracy and robustness, use a **Multi-Scope** approach:
-1.  **Precision Scope (Header)**: Used for **Location**. Restrict search to the Top Card/Header area (e.g., `.job-details-jobs-unified-top-card`) to avoid picking up irrelevant cities or text from the job description.
-2.  **Recall Scope (Global)**: Used for **Salary**, **Posted At**, and **Workplace Type**. Search the entire `main` or `article` area to ensure these are captured even if LinkedIn moves them to a sidebar or secondary section.
+1.  **Precision Scope (Header)**: Used for **Location** and **Salary Badges**. Restrict search to the Top Card/Header area (e.g., `.job-details-jobs-unified-top-card`) to avoid picking up irrelevant text or recommendations.
+2.  **Scoped Content Scope (Job Details Container)**: Used for **Job Description**, **Benefits**, and **Description-Embedded Salary**. Search strictly within `#job-details` / `.jobs-description`. NEVER search `document.body.innerText` globally, as that captures unrelated "More jobs" recommendations and ads.
 
 - **Job Title**: 
   - **Primary**: The text that matches `document.title` (stripped of " | LinkedIn").
@@ -28,10 +28,12 @@ To balance accuracy and robustness, use a **Multi-Scope** approach:
     - **Heuristic**: Split by bullets (`·` or `•`). 
     - **Applicants**: Look for a segment containing "applicant" or "clicked apply". Extract the numeric portion (e.g., "15" from "15 people clicked apply").
   - **Salary**: 
-    - Look for elements containing `$` and `hr` or `yr`.
+    - **Primary**: Top card insight badge containing `$` and a period/time suffix (`yr`, `hr`, `year`, `hour`, `annually`).
+    - **Fallback**: Search within `#job-details` text for explicit salary prefixes (`salary range: $X - $Y`) or clean dollar ranges (`$100,000 - $155,000`).
+    - **Negative Rule**: Never scan global `document.body` text; return `null` if not found in the active posting.
   - **Workplace Type**: 
     - Search for "Remote", "Hybrid", or "On-site" in the top card insights.
-  - **Employment Type**:
+  - **Employment Type**: 
     - Search for "Full-time", "Contract", "Part-time" in the top card insights or job details.
   - **Job Function & Seniority**:
     - **Primary**: Look for "Job function" or "Seniority level" labels in the job details section (e.g., `.description__job-criteria-item` or `.jobs-description-details__list-item`).

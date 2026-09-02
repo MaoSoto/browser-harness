@@ -162,12 +162,6 @@ def extract_job_data(input_url):
                 if (jfLine) jobFunction = jfLine.split(':').pop().trim();
             }
 
-            let salary = insights.find(i => i.includes('$')) || null;
-            if (!salary) {
-                const salaryMatch = bodyText.match(/\$\d+([,\.]\d+)?(?:.*?)(?:hr|yr|month|week|year|hour)/i);
-                if (salaryMatch) salary = salaryMatch[0];
-            }
-
             // Description
             const cleanDescription = (html) => {
                 if (!html) return '';
@@ -195,6 +189,46 @@ def extract_job_data(input_url):
                  }
             }
             const description = descEl ? cleanDescription(descEl.innerHTML) : "NOT FOUND";
+
+            // Scoped Salary Extraction (Never search document.body.innerText globally)
+            let salary = null;
+            // 1. Check Top Card Insight Badges (Must contain $ and a period suffix)
+            const topCard = document.querySelector('.job-details-jobs-unified-top-card') || 
+                            document.querySelector('.jobs-unified-top-card') || 
+                            document.querySelector('[class*="top-card"]');
+            if (topCard) {
+                const badgeEls = Array.from(topCard.querySelectorAll('li, span, div, button')).filter(el => {
+                    const text = el.innerText?.trim() || '';
+                    return text.includes('$') && text.length < 60 && !text.includes('\n');
+                });
+                for (let el of badgeEls) {
+                    const t = el.innerText.trim();
+                    if (/\$\d+/.test(t) && /(?:yr|hr|year|hour|month|mo|week|annual)/i.test(t)) {
+                        salary = t;
+                        break;
+                    }
+                }
+            }
+            // 2. If not in top-card badges, search ONLY within scoped job description
+            if (!salary && description && description !== "NOT FOUND") {
+                // Pattern A: "salary range ... is $X - $Y" or "wage range: $X - $Y"
+                const prefixMatch = description.match(/(?:salary|compensation|pay|wage)(?:[\w\s,]{0,40}?)(?:is|:|of)?\s*(\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?)/i);
+                if (prefixMatch && prefixMatch[1] && prefixMatch[1].length > 2) {
+                    salary = prefixMatch[1].trim();
+                } else {
+                    // Pattern B: Clean standalone dollar range ($100,000 - $155,000 or $90k - $100k)
+                    const rangeMatch = description.match(/\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:-|–|—|to)\s*\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?(?:\s*(?:per|\/|a|an)?\s*(?:year|yr|hour|hr|month|mo|week|annually))?/i);
+                    if (rangeMatch) {
+                        salary = rangeMatch[0].trim();
+                    } else {
+                        // Pattern C: Single rate with period suffix ($50/hr, $150,000 a year)
+                        const singleMatch = description.match(/\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:k|K)?\s*(?:per|\/|a|an)\s*(?:year|yr|hour|hr|month|mo|week|annually)\b/i);
+                        if (singleMatch) {
+                            salary = singleMatch[0].trim();
+                        }
+                    }
+                }
+            }
 
             // Experience Range heuristic from description
             let experienceRange = null;

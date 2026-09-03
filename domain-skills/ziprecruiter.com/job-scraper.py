@@ -376,12 +376,8 @@ def extract_company_data_block():
     """)
     info["logo_url"] = js("""
     (() => {
-        const cd = document.querySelector('[data-testid="company-data"]');
-        const img = cd ? cd.querySelector('img') : null;
-        if (img && img.src && !img.src.includes('public-nosensitive-ziprecruiter-logos') && !img.src.includes('ziprecruiter.com/assets')) {
-            return img.src;
-        }
-        return null;
+        const img = document.querySelector("img[src*='/company/']");
+        return img ? img.src : null;
     })()
     """)
     return info
@@ -823,7 +819,7 @@ def main():
     }
 
     final_logo = company_info["logo_url"] or company_logo or company_logo_pane
-    if final_logo and ("public-nosensitive-ziprecruiter-logos" in final_logo or "ziprecruiter.com/assets" in final_logo):
+    if final_logo and "ziprecruiter.com/assets" in final_logo:
         final_logo = None
 
     organization = {

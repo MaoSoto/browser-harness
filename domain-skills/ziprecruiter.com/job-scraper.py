@@ -822,13 +822,17 @@ def main():
         },
     }
 
+    final_logo = company_info["logo_url"] or company_logo or company_logo_pane
+    if final_logo and ("public-nosensitive-ziprecruiter-logos" in final_logo or "ziprecruiter.com/assets" in final_logo):
+        final_logo = None
+
     organization = {
         "name": company_name,
         "slogan": None,
         "description": company_info["description"],
         "website": company_info["website"],
         "linkedin_url": company_info["linkedin_url"],
-        "logo_url": company_info["logo_url"] or company_logo or company_logo_pane,
+        "logo_url": final_logo,
         "employees_count": company_info["employees_count"],
         "industries": company_info["industries"],
         "addr_country": company_info["addr_country"],
@@ -839,7 +843,8 @@ def main():
         "addr_type": "Headquarters",
         "organization_type": "Company",
         "indeed_url": None,
-        "metadata": {"ziprecruiter_url": company_zr_url},
+        "job_board_url": company_zr_url,
+        "metadata": {},
     }
 
     poster = {

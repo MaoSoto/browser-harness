@@ -8,6 +8,12 @@ import urllib.request
 
 DEFAULT_SELECTORS = {
     "linkedin.com": {
+        "target_rule": {
+            "type": "spa_param",
+            "url_params": ["currentJobId"],
+            "path_regex": r"/jobs/view/(\d+)",
+            "canonical_template": "https://www.linkedin.com/jobs/view/{id}/"
+        },
         "top_card_selectors": [
             ".job-details-jobs-unified-top-card",
             ".jobs-unified-top-card",
@@ -37,6 +43,11 @@ DEFAULT_SELECTORS = {
         }
     },
     "indeed.com": {
+        "target_rule": {
+            "type": "spa_param",
+            "url_params": ["jk", "vjk"],
+            "canonical_template": "https://www.indeed.com/viewjob?jk={id}"
+        },
         "salary_badge_selectors": [
             "#salaryInfoAndJobType",
             "div[data-testid='inlineHeader-salary']"
@@ -125,3 +136,12 @@ def load_selectors(force_refresh=False):
 def get_domain_selectors(domain):
     domains = load_selectors()
     return domains.get(domain, DEFAULT_SELECTORS.get(domain, {}))
+
+def get_all_target_rules():
+    """Extracts target_rule for each domain from remote/cached selectors."""
+    domains = load_selectors()
+    rules = {}
+    for d, cfg in domains.items():
+        if isinstance(cfg, dict) and "target_rule" in cfg:
+            rules[d] = cfg["target_rule"]
+    return rules

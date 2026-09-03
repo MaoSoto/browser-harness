@@ -49,3 +49,14 @@ If company details (website, logo, etc.) are missing or need enrichment:
 ## Site Quirks
 - Indeed sometimes uses "Simple VJ" (View Job) which has a different layout than the standard one.
 - The `application/ld+json` is generally consistent across layouts.
+
+## Dynamic Selectors & Self-Healing Guardrails (CRITICAL FOR AI AGENTS)
+When an AI agent is engaged to heal or rewrite this scraper:
+1. **Preserve Dynamic Selectors:** Do NOT hardcode brittle selectors directly. Always load `get_domain_selectors("indeed.com")` from `selector_manager` so selectors remain remotely updateable via `selectors.json` without requiring binary re-releases.
+2. **Preserve `sys.path` Anchoring:** Always maintain the path resolver at the very top of `job-scraper.py`:
+   ```python
+   _HARNESS_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+   if _HARNESS_ROOT not in sys.path:
+       sys.path.insert(0, _HARNESS_ROOT)
+   ```
+3. **Preserve Scoped Salary Fallback:** Check structured `baseSalary` and DOM `#salaryInfoAndJobType` first. If missing, fall back strictly within the scoped `cleanDescription(desc_html)` text using patterns from `domain_cfg['salary_patterns']`.

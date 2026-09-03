@@ -77,3 +77,15 @@ To balance accuracy and robustness, use a **Multi-Scope** approach:
 2. **Poster Profile**: If poster info is found, visit their profile in a background tab to get full details.
 3. **Company About**: If company link is found (and not Confidential), visit `/about/` to get website and details.
 4. **Apply Resolution**: If external apply, follow the link to identify the `ats_vendor`.
+
+## Dynamic Selectors & Self-Healing Guardrails (CRITICAL FOR AI AGENTS)
+When an AI agent is engaged to heal or rewrite this scraper:
+1. **Preserve Dynamic Selectors:** Do NOT hardcode brittle selectors directly. Always load `get_domain_selectors("linkedin.com")` from `selector_manager` so selectors remain remotely updateable via `selectors.json` without requiring binary re-releases.
+2. **Preserve `sys.path` Anchoring:** Always maintain the path resolver at the very top of `job-scraper.py`:
+   ```python
+   _HARNESS_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+   if _HARNESS_ROOT not in sys.path:
+       sys.path.insert(0, _HARNESS_ROOT)
+   ```
+3. **Preserve IIFE Invocation:** Pass the dynamic configuration into JavaScript as an evaluated IIFE: `((cfg) => { ... })(cfg_json)`.
+4. **Enforce Scoped Extraction:** Never revert to global `document.body` scanning for salary or compensation. If no salary exists on the job card, return `null`.

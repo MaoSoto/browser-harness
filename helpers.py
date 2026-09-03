@@ -191,7 +191,13 @@ def new_tab(url="about:blank", activate=False, reuse=True):
     return tid
 
 def close_tab(target_id):
-    return cdp("Target.closeTarget", targetId=target_id)
+    try:
+        tabs = list_tabs(include_chrome=False)
+        if len(tabs) <= 1:
+            return None
+        return cdp("Target.closeTarget", targetId=target_id)
+    except Exception:
+        return None
 
 def ensure_real_tab():
     tabs = list_tabs(include_chrome=False)

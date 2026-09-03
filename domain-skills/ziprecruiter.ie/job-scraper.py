@@ -189,18 +189,22 @@ def main():
     input_url = sys.argv[1]
 
     original_tid = None
+    was_already_open = False
     try:
-        for t in list_tabs():
+        tabs = list_tabs()
+        for t in tabs:
             if t.get("activated"):
                 original_tid = t["targetId"]
-                break
+            if input_url.split('?')[0] in t.get("url", ""):
+                was_already_open = True
     except Exception:
         pass
 
     job_tid = new_tab(input_url, activate=False)
-    goto_url(input_url)
-    wait_for_load()
-    time.sleep(1.5)
+    if not was_already_open:
+        goto_url(input_url)
+        wait_for_load()
+        time.sleep(1.5)
 
     ld_json_raw = js(
         "document.querySelector(\"script[type='application/ld+json']\")?.innerText"
@@ -347,7 +351,7 @@ def main():
     print("=== END JSON ===")
 
     try:
-        if job_tid:
+        if job_tid and not was_already_open:
             close_tab(job_tid)
         if original_tid:
             switch_tab(original_tid, activate=True)

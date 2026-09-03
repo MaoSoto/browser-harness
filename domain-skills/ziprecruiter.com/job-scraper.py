@@ -25,6 +25,46 @@ WORKPLACE_TOKEN_MAP = {
 }
 
 
+def stripHeaderPreamble(text, title, company):
+    """Remove the metadata header (title, company, location, salary, posted) from description text.
+    Cuts everything before the 'Job description' marker, or the first body sentence if marker missing."""
+    if not text:
+        return text
+    lines = text.split("\n")
+    cut_idx = None
+    for i, ln in enumerate(lines):
+        if ln.strip().lower() in {"job description", "about the job", "description", "position summary", "summary"}:
+            cut_idx = i + 1
+            break
+    if cut_idx is None:
+        # Fall back: drop lines until we find a sentence that doesn't look like metadata
+        meta_pattern = re.compile(
+            r"^("
+            r"\$[\d,.\s/-]+(?:/?(?:hr|yr|year|hour|month|k))?"  # salary
+            r"|full[-\s]?time|part[-\s]?time|contract|temporary|internship|seasonal|freelance"  # employment
+            r"|posted\s.*|today|yesterday|just posted"  # posted
+            r"|1-click apply|apply now|apply"  # apply
+            r"|.*[•·\|]\s*(remote|hybrid|on-?site|in-?person)"  # location with workplace
+            r")",
+            re.IGNORECASE,
+        )
+        for i, ln in enumerate(lines):
+            s = ln.strip()
+            if not s:
+                continue
+            if s == (title or "").strip():
+                continue
+            if s == (company or "").strip():
+                continue
+            if meta_pattern.match(s):
+                continue
+            cut_idx = i
+            break
+    if cut_idx is None or cut_idx == 0:
+        return text
+    return "\n".join(lines[cut_idx:]).lstrip("\n")
+
+
 def cleanDescription(text_or_html):
     if not text_or_html:
         return ""
@@ -44,6 +84,9 @@ def cleanDescription(text_or_html):
     s = re.sub(r"^[\s*\-_=•·]+", "", s)
     s = re.sub(r"\*\*\s*\*\*", "", s)
     s = re.sub(r"^\s*\*\s*$", "", s, flags=re.MULTILINE)
+    s = re.sub(r"\bamp\.{2,}\s*", "", s)
+    s = re.sub(r"\.{2,}\s*(\d+\.\s+)", r". \1", s)
+    s = re.sub(r"\.{2,}", ".", s)
 
     redundant = {
         "job description", "about the job", "summary", "position summary",
@@ -59,8 +102,10 @@ def cleanDescription(text_or_html):
             if cleaned_lines and cleaned_lines[-1] != "":
                 cleaned_lines.append("")
             continue
-        low = line.lower().strip("* :.-")
+        low = line.lower().strip("* :.-'\"")
         if low in redundant:
+            continue
+        if re.fullmatch(r"[\*\s_\-=•·'\"\.\d]{1,8}", line):
             continue
         if re.fullmatch(r"[\*\s_\-=•·]{3,}", line):
             continue
@@ -205,14 +250,49 @@ def extract_jsonld_itemlist():
 def find_apply_url_in_pane(right_pane_sel):
     """Find the actual Apply redirect URL inside the right pane (excluding share links)."""
     return js(
-        "Array.from(document.querySelectorAll(" + json.dumps(right_pane_sel) + " a[href*='/job-redirect?'])).map(a => a.href).find(h => {const u=(h||'').toLowerCase(); return u.indexOf('sharer.php')===-1 && u.indexOf('intent/tweet')===-1 && u.indexOf('share-offsite')===-1 && u.indexOf('mailto:')===-1;}) || null"
+        "(()=>{const r=document.querySelector(" + json.dumps(right_pane_sel) + ");"
+        "if(!r) return null;"
+        "for(const a of r.querySelectorAll('a')){"
+        "  const h=a.href||'';"
+        "  if(!h.toLowerCase().includes('/job-redirect?')) continue;"
+        "  const u=h.toLowerCase();"
+        "  if(u.includes('sharer.php')||u.includes('intent/tweet')||u.includes('share-offsite')||u.includes('mailto:')||u.includes('/share')) continue;"
+        "  return h;"
+        "}"
+        "return null;})()"
     )
 
 
 def find_company_url_in_pane(right_pane_sel):
-    """Find first /co/<Slug> anchor (no /Jobs suffix) in right pane."""
+    """Find first /co/<Slug> anchor in the right pane. Strips /Jobs and query params to derive canonical /co/<slug>."""
     return js(
-        "Array.from(document.querySelectorAll(" + json.dumps(right_pane_sel) + " a[href*='/co/'])).map(a => a.href).find(h => {const u=(h||'').toLowerCase(); return u.indexOf('/jobs')===-1;}) || null"
+        "(()=>{const r=document.querySelector(" + json.dumps(right_pane_sel) + ");"
+        "if(!r) return null;"
+        "const seen=new Set();"
+        "for(const a of r.querySelectorAll('a')){"
+        "  const h=a.href||'';"
+        "  if(!h.includes('/co/')) continue;"
+        "  let u=h.split('?')[0].split('#')[0];"
+        "  u=u.replace(/\\/Jobs$/i,'');"
+        "  if(!/^https:\\/\\/www\\.ziprecruiter\\.com\\/co\\/[^/]+$/.test(u)) continue;"
+        "  if(seen.has(u)) continue;"
+        "  seen.add(u);"
+        "  return u;"
+        "}"
+        "return null;})()"
+    )
+
+
+def find_company_logo_in_pane(right_pane_sel):
+    """Find company logo image inside the right pane header."""
+    return js(
+        "(()=>{const r=document.querySelector(" + json.dumps(right_pane_sel) + ");"
+        "if(!r) return null;"
+        "for(const img of r.querySelectorAll('img')){"
+        "  const s=img.src||'';"
+        "  if(s && (s.includes('fotomat/public')||s.includes('company')||s.includes('logo'))) return s;"
+        "}"
+        "return null;})()"
     )
 
 
@@ -267,20 +347,43 @@ def extract_company_data_block():
             elif parts_hq:
                 info["addr_locality"] = parts_hq[0]
 
-    info["website"] = js(
-        "Array.from(document.querySelectorAll('a')).map(a => a.href).find(h => "
-        "h && !h.includes('ziprecruiter.com') && !h.includes('facebook.com') && "
-        "!h.includes('twitter.com') && !h.includes('instagram.com') && "
-        "!h.includes('linkedin.com') && !h.includes('breakroom.cc') && "
-        "!h.includes('ketchcdn.com') && !h.startsWith('mailto:') && !h.startsWith('javascript:'))"
-    )
-    info["linkedin_url"] = js(
-        "Array.from(document.querySelectorAll(\"a[href*='linkedin.com/company']\")).map(a => a.href)[0]"
-    )
-    info["logo_url"] = js(
-        "document.querySelector('[data-testid=\"company-data\"] img')?.src || "
-        "document.querySelector('img[alt*=\"logo\"], img[class*=logo]')?.src"
-    )
+    info["website"] = js("""
+    (() => {
+        const cd = document.querySelector('[data-testid="company-data"]');
+        if (!cd) return null;
+        const anchors = Array.from(cd.querySelectorAll('a[href^="http"]'));
+        const found = anchors.map(a => a.href).find(h => {
+            const u = (h || '').toLowerCase();
+            return !u.includes('ziprecruiter') && !u.includes('facebook.com') && 
+                   !u.includes('twitter.com') && !u.includes('instagram.com') && 
+                   !u.includes('linkedin.com') && !u.includes('breakroom.cc') && 
+                   !u.includes('ketchcdn.com');
+        });
+        return found || null;
+    })()
+    """)
+    info["linkedin_url"] = js("""
+    (() => {
+        const cd = document.querySelector('[data-testid="company-data"]');
+        if (!cd) return null;
+        const anchors = Array.from(cd.querySelectorAll("a[href*='linkedin.com/company']"));
+        const found = anchors.map(a => a.href).find(h => {
+            const u = (h || '').toLowerCase();
+            return !u.includes('ziprecruiter') && !u.includes('/company/ziprecruiter');
+        });
+        return found || null;
+    })()
+    """)
+    info["logo_url"] = js("""
+    (() => {
+        const cd = document.querySelector('[data-testid="company-data"]');
+        const img = cd ? cd.querySelector('img') : null;
+        if (img && img.src && !img.src.includes('public-nosensitive-ziprecruiter-logos') && !img.src.includes('ziprecruiter.com/assets')) {
+            return img.src;
+        }
+        return null;
+    })()
+    """)
     return info
 
 
@@ -479,6 +582,7 @@ def main():
 
     # Find company URL and apply URL from right-pane anchors
     company_zr_url = find_company_url_in_pane(right_pane_sel)
+    company_logo_pane = find_company_logo_in_pane(right_pane_sel)
     apply_redirect_url = find_apply_url_in_pane(right_pane_sel)
 
     # Try to enhance with React fiber data (best-effort, may fail)
@@ -626,7 +730,13 @@ def main():
             pass
 
     # ---------- Description ----------
-    desc_text = cleanDescription(right_text)
+    # Try the dedicated job-details-scroll-container first (cleanest body); fall back to right-pane.
+    desc_raw = js(f"document.querySelector({json.dumps(desc_sel)})?.innerText || \"\"")
+    if not desc_raw:
+        desc_raw = right_text
+    # Strip the metadata header preamble so description starts at the actual job body
+    desc_body = stripHeaderPreamble(desc_raw, title, company_name)
+    desc_text = cleanDescription(desc_body)
     if title:
         dl = desc_text.split("\n")
         while dl and dl[0].strip() in {f"- {title}", title, f"- {title.strip()}"}:
@@ -718,7 +828,7 @@ def main():
         "description": company_info["description"],
         "website": company_info["website"],
         "linkedin_url": company_info["linkedin_url"],
-        "logo_url": company_info["logo_url"] or company_logo,
+        "logo_url": company_info["logo_url"] or company_logo or company_logo_pane,
         "employees_count": company_info["employees_count"],
         "industries": company_info["industries"],
         "addr_country": company_info["addr_country"],
